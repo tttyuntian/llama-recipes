@@ -1,3 +1,12 @@
+# Customize
+load_modules.sh
+develop/
+ft_ckpts/
+ft_datasets/
+outputs/
+slurm_scripts/
+
 .DS_Store
 __pycache__
-.ipynb_checkpoints
+.ipynb_checkpointsa
+
