@@ -1,0 +1,1 @@
+python examples/inference_acre.py --model_name "/gpfs/data/superlab/models/llama2/llama/checkpoints/hf/Llama-2-7b-hf" --peft_model /users/tyun/data/tyun/llm_causal_reasoning/llama-recipes/ft_ckpts/acre_consistent_dataset/symbolic/llama_2_7b --task acre_consistent --data_type symbolic --data_size 2
