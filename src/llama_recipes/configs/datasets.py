@@ -34,3 +34,37 @@ class custom_dataset:
     file: str = "examples/custom_dataset.py"
     train_split: str = "train"
     test_split: str = "validation"
+
+
+@dataclass
+class acre_dataset:
+    dataset: str = "acre_dataset"
+    # file: str = "examples/acre_dataset.py"
+    train_split: str = "train"
+    test_split: str = "val"
+    task: str = "acre"
+    data_split: str = "iid"
+    data_size: int = -1
+    max_tokens: int = 312
+    data_split_root: str = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/data/{task}/{data_split}"
+    data_type: str = "language"  # ["symbolic", "language"]
+    num_contexts_per_example = 6
+    num_queries_per_example = 4
+    num_panels_per_example = 10
+
+
+@dataclass
+class acre_consistent_dataset:
+    dataset: str = "acre_consistent_dataset"
+    # file: str = "examples/acre_dataset.py"
+    train_split: str = "train"
+    test_split: str = "val"
+    task: str = "acre_consistent"
+    data_split: str = "iid"
+    data_size: int = -1
+    max_tokens: int = 196
+    data_split_root: str = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/data/{task}/{data_split}"
+    data_type: str = "language"  # ["symbolic", "language"]
+    num_contexts_per_example = 2
+    num_queries_per_example = 1
+    num_panels_per_example = 3
