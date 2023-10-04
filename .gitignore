@@ -2,7 +2,6 @@
 load_modules.sh
 develop/
 ft_ckpts/
-ft_datasets/
 outputs/
 slurm_scripts/
 
