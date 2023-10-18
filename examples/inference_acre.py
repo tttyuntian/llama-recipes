@@ -163,7 +163,8 @@ def main(
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"])
         
-        output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-2], skip_special_tokens=True)
+        # output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-2], skip_special_tokens=True)
+        output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-1], skip_special_tokens=True)
         responses.append(output_text)
 
         """
