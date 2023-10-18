@@ -149,19 +149,10 @@ class AcreDataset(Dataset):
             padding = self.max_tokens - example.shape[0]
             if padding > 0:
                 input_ids = torch.cat((example, torch.zeros(padding, dtype=torch.int64) - 1))
-                # labels = torch.cat((
-                #     torch.cat((example[1:], torch.LongTensor([self.tokenizer.eos_token_id]))), 
-                #     torch.zeros(padding, dtype=torch.int64) - 1
-                # ))
             elif padding < 0:
                 input_ids = example[: self.max_tokens]
-                # labels = example[1: self.max_tokens + 1]
                 print(f"Example {idx} with {example.shape[0]} tokens goes over max_tokens={self.max_tokens}")
-            # elif padding == 0:
-            #     input_ids = example[:]
-            #     labels = torch.cat((example[1:], torch.LongTensor([self.tokenizer.eos_token_id])))
-
-            # labels[: (len(prompt) - 1)] = -1
+            
             labels = copy.deepcopy(input_ids)
             labels[: len(prompt)] = -1
             input_ids_mask = input_ids.ge(0)
