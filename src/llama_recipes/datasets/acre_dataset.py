@@ -93,7 +93,7 @@ def get_objects_str(objects, data_type):
         raise Exception(f"{data_type} not supported.")
     
 
-def get_prompts_and_outputs(dataset, dataset_config):
+def get_prompts_and_outputs(dataset, dataset_config, is_inference):
     prompts, outputs = [],[]
 
     for ex_id, ex in tqdm(enumerate(dataset), total=len(dataset)):
@@ -111,18 +111,42 @@ def get_prompts_and_outputs(dataset, dataset_config):
             base_prompt += f"{get_objects_str(panel['objects'], dataset_config.data_type)}\nLight: {light_state}\n"
 
         for i in range(dataset_config.num_contexts_per_example, dataset_config.num_panels_per_example):
+            
             panel = ex[i]
-            light_state = IDX_TO_LIGHT_STATE[panel["label"]]
-            prompt = base_prompt + f"{get_objects_str(panel['objects'], dataset_config.data_type)}\nLight:"
-            prompts.append(prompt)
-            outputs.append(light_state)
+            
+            is_valid = False
+            if not is_inference:
+                if dataset_config.train_query_type == "":
+                    # No specified train_query_type, then we use all the data for training
+                    is_valid = True
+                else:
+                    if panel["type"] == dataset_config.train_query_type:
+                        # If this is train_query_type, only count the target query type
+                        is_valid = True
+            else: 
+                # Run through all inference examples, regardless of query types
+                is_valid = True
+                # if dataset_config.train_query_type == "":
+                #     # No specified train_query_types, then we use all the data for validation/test
+                #     is_valid = True
+                # else:
+                #     if panel["type"] != dataset_config.train_query_type:
+                #         # If this is train_query_type, only count the query types which are not the train_query_type
+                #         is_valid = True
+
+            if is_valid:
+                light_state = IDX_TO_LIGHT_STATE[panel["label"]]
+                prompt = base_prompt + f"{get_objects_str(panel['objects'], dataset_config.data_type)}\nLight:"
+                prompts.append(prompt)
+                outputs.append(light_state)
     return prompts, outputs
 
 
 class AcreDataset(Dataset):
     def __init__(self, dataset_config, tokenizer, split="train", is_inference=False):
+        self.dataset_config = dataset_config
         self.dataset = get_data(dataset_config.data_type, split, dataset_config)
-        self.prompts, self.outputs = get_prompts_and_outputs(self.dataset, dataset_config)
+        self.prompts, self.outputs = get_prompts_and_outputs(self.dataset, dataset_config, is_inference)
 
         self.tokenizer = tokenizer
         self.max_tokens = dataset_config.max_tokens

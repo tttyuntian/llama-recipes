@@ -113,7 +113,7 @@ def main(
     torch.manual_seed(seed)
     
     model = load_model(model_name, quantization)
-    if peft_model:
+    if peft_model and peft_model != "skip":
         model = load_peft_model(model, peft_model)
 
     model.eval()

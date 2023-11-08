@@ -51,6 +51,7 @@ class acre_dataset:
     num_contexts_per_example = 6
     num_queries_per_example = 4
     num_panels_per_example = 10
+    train_query_type: str = ""
 
 
 @dataclass
