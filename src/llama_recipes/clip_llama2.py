@@ -34,6 +34,7 @@ class DatasetConfigurations:
         self.num_panels_per_example = 3
         self.data_size = -1
         self.is_cropped_objs = False
+        self.is_train_image_encoder = False
 
 
 class TrainConfigurations:
@@ -44,13 +45,17 @@ class TrainConfigurations:
         self.num_epochs = 10
         self.gradient_accumulation_steps = 16
         self.batch_size = 2
+        self.is_train_image_encoder = False
+        self.output_dir = None
+        self.num_workers = 0
 
 
-def update_dataset_config(config, task, data_type, data_size, is_cropped_objs):
+def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, is_train_image_encoder):
     config.task = task
     config.data_type = data_type
     config.data_size = data_size
     config.is_cropped_objs = is_cropped_objs
+    config.is_train_image_encoder = is_train_image_encoder
     if config.task == "acre":
         config.max_tokens = 312
         config.num_contexts_per_example = 6
@@ -66,7 +71,7 @@ def update_dataset_config(config, task, data_type, data_size, is_cropped_objs):
     return config
 
 
-def update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps):
+def update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, clip_model, num_workers, is_train_image_encoder, output_dir):
     train_config.model_name = model_name
     train_config.quantization = quantization
     train_config.lr = lr
@@ -74,12 +79,27 @@ def update_train_config(train_config, model_name, quantization, lr, num_epochs, 
     train_config.gradient_accumulation_steps = gradient_accumulation_steps
     train_config.batch_size = batch_size
     train_config.validation_steps = validation_steps
+    train_config.is_train_image_encoder = is_train_image_encoder
+    train_config.output_dir = output_dir
+    train_config.num_workers = num_workers
+    train_config.clip_model = clip_model
     return train_config
 
 
+def convert_models_to_fp32(model): 
+    for p in model.parameters(): 
+        p.data = p.data.float() 
+        p.grad.data = p.grad.data.float()
+
+
 def eval(model, data, train_config, tokenizer):
-    model.projection.eval()
-    loader = DataLoader(data, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=False, drop_last=False)
+    if train_config.is_train_image_encoder:
+        model.clip_model.eval()
+        model.projection.eval()
+    else:
+        model.projection.eval()
+
+    loader = DataLoader(data, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=False, drop_last=False, num_workers=train_config.num_workers)
 
     all_predictions, all_labels = [],[]
     for batch in loader:
@@ -112,6 +132,9 @@ def main(
     gradient_accumulation_steps,
     batch_size,
     validation_steps,
+    clip_model,
+    num_workers: int=0,
+    is_train_image_encoder: bool=True, # Whether we train image encoder. If `True`, LLAMA is frozen and image encoder will be trained. If `False`, both LLAMA and image encoder will be frozen.
     task: str=None, # Task name of ACRE dataset: ["acre", "acre_consistent"]
     data_type: str=None, # Data type of ACRE dataset: ["symbolic", "language"]
     data_size: int=-1, # Number of data for inference. -1 means all the data.
@@ -122,13 +145,13 @@ def main(
     # Prepare configurations
     print("Prepare configurations", flush=True)
     dataset_config = DatasetConfigurations()
-    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs)
+    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs, is_train_image_encoder)
     dataset_config.data_root = os.path.join(dataset_config.work_root, "data", dataset_config.task)
     dataset_config.data_split_root = os.path.join(dataset_config.data_root, dataset_config.data_split)
     dataset_config.rendered_data_root = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/ACRE/rendered_data/{dataset_config.task}/IID"
 
     train_config = TrainConfigurations()
-    train_config = update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps)
+    train_config = update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, clip_model, num_workers, is_train_image_encoder, output_dir)
 
     print(dataset_config.__dict__)
     print(train_config.__dict__)
@@ -143,8 +166,18 @@ def main(
 
     # Load CLIP
     print("Load CLIP", flush=True)
-    clip_model, preprocess = clip.load("ViT-L/14@336px", device=device)
+    if train_config.is_train_image_encoder:
+        clip_model, preprocess = clip.load(train_config.clip_model, device=device, jit=False)  # need to set  `jit=False` for training
+    else:
+        clip_model, preprocess = clip.load(train_config.clip_model, device=device)
     clip_model.eval()
+
+    # If we train clip_model, freeze clip_model all layers except the last
+    if train_config.is_train_image_encoder:
+        print("Freeze clip image encoder, except last layer", flush=True)
+        for name, params in clip_model.named_parameters():
+            if name.startswith("visual.transformer.resblocks.23"):
+                params.requires_grad = False
 
     # Load Llama model
     print("Load LlamaForCausalLM", flush=True)
@@ -165,14 +198,25 @@ def main(
     # Build model and optimizer
     print("Build model and optimizer", flush=True)
     image_hidden_size = clip_model.token_embedding.embedding_dim
-    model = ObjectCentricLlama(llama_model, image_hidden_size, mask_token_id=tokenizer.mask_token_id, use_visual_encoder=True)
-    model.projection.to(device)
-
-    optimizer = optim.AdamW(
-        model.projection.parameters(),
-        lr=train_config.lr,
-        weight_decay=0.0,
-    )
+    model = ObjectCentricLlama(llama_model, clip_model, image_hidden_size, mask_token_id=tokenizer.mask_token_id, use_visual_encoder=True, is_train_image_encoder=train_config.is_train_image_encoder)
+    
+    if train_config.is_train_image_encoder:
+        model.projection.to(device)
+        optimizer = optim.AdamW(
+            list(model.clip_model.parameters()) + list(model.projection.parameters()),
+            lr=train_config.lr,
+            betas=(0.9, 0.98),
+            eps=1e-6,
+            weight_decay=0.2,
+        )
+    else:
+        model.projection.to(device)
+        optimizer = optim.AdamW(
+            model.projection.parameters(),
+            lr=train_config.lr,
+            weight_decay=0.0,
+        )
+        
 
     # Prepare datasets
     dataset_train = AcreDataset(
@@ -180,16 +224,20 @@ def main(
         tokenizer, 
         "train", 
         is_inference=False, 
-        clip_model=clip_model,image_preprocess=preprocess, 
-        device=device
+        clip_model=clip_model,
+        image_preprocess=preprocess, 
+        device=device,
+        is_cropped_objs=dataset_config.is_cropped_objs,
     )
     dataset_valid = AcreDataset(
         dataset_config, 
         tokenizer, 
         "val", 
         is_inference=False, 
-        clip_model=clip_model,image_preprocess=preprocess, 
-        device=device
+        clip_model=clip_model,
+        image_preprocess=preprocess, 
+        device=device,
+        is_cropped_objs=dataset_config.is_cropped_objs,
     )
     dataset_test = AcreDataset(
         dataset_config, 
@@ -198,7 +246,8 @@ def main(
         is_inference=False, 
         clip_model=clip_model,
         image_preprocess=preprocess, 
-        device=device
+        device=device,
+        is_cropped_objs=dataset_config.is_cropped_objs,
     )
 
     # Start training
@@ -207,12 +256,16 @@ def main(
     loss = -1
     for epoch_id in range(train_config.num_epochs):
         print("="*70, flush=True)
-        dataloader_train = DataLoader(dataset_train, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=True, drop_last=True)
+        dataloader_train = DataLoader(dataset_train, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=True, drop_last=True, num_workers=train_config.num_workers)
 
         pbar = tqdm(desc=f"Training Epoch: {epoch_id + 1}", total=len(dataloader_train)//train_config.gradient_accumulation_steps)
 
         for step_id, batch in enumerate(dataloader_train):
-            model.projection.train()
+            if train_config.is_train_image_encoder:
+                model.clip_model.train()
+                model.projection.train()
+            else:
+                model.projection.train()
 
             seq_lengths = batch["seq_lengths"].to(device)
             input_ids = batch["input_ids"].to(device)

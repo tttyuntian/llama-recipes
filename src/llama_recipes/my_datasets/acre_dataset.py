@@ -128,7 +128,7 @@ def get_context_and_image(dataset_config, split, ex_id, panel_id):
 def get_panel_images(dataset_config, num_examples, split):
     # Load panels of each example
     all_panel_images = []
-    for ex_id in tqdm(range(num_examples), desc=f"{split}"):
+    for ex_id in tqdm(range(num_examples), desc=f"{split} get_panel_images"):
         
         if ex_id == dataset_config.data_size:
             break
@@ -150,7 +150,7 @@ def get_panel_images(dataset_config, num_examples, split):
 def get_cropped_objects(dataset_config, num_examples, split):
     # Load scenes and corresponding cropped objects
     all_cropped_objs = []
-    for ex_id in tqdm(range(num_examples), desc=f"{split}"):
+    for ex_id in tqdm(range(num_examples), desc=f"{split} get_cropped_objects"):
         
         if ex_id == dataset_config.data_size:
             break
@@ -181,13 +181,14 @@ def get_cropped_objects(dataset_config, num_examples, split):
     return all_cropped_objs
 
 
-def process_objects(all_cropped_objs, image_preprocess, clip_model=None, device=None):
+def process_objects(split, all_cropped_objs, image_preprocess, clip_model=None, device=None):
     res = []
-    for cropped_objs in tqdm(all_cropped_objs):
+    for cropped_objs in tqdm(all_cropped_objs, desc=f"{split} process_objects"):
         curr_objs = []
         for cropped_obj in cropped_objs:
             curr_obj = image_preprocess(Image.fromarray(cropped_obj)).unsqueeze(0)
             if clip_model:
+                # If clip_model is passed in and we do not train image encoder, it means we can precompute image features
                 with torch.no_grad():
                     image_feature = clip_model.encode_image(curr_obj.to(device))
                 curr_objs.append(image_feature.detach().cpu().numpy()[0].copy())
@@ -197,13 +198,14 @@ def process_objects(all_cropped_objs, image_preprocess, clip_model=None, device=
     return res
 
 
-def process_images(all_panel_imgs, image_preprocess, clip_model=None, device=None):
+def process_images(split, all_panel_imgs, image_preprocess, clip_model=None, device=None):
     res = []
-    for panel_imgs in tqdm(all_panel_imgs):
+    for panel_imgs in tqdm(all_panel_imgs, desc=f"{split} process_images"):
         curr_imgs = []
         for panel_img in panel_imgs:
             curr_img = image_preprocess(Image.fromarray(panel_img)).unsqueeze(0)
             if clip_model:
+                # If clip_model is passed in and we do not train image encoder, it means we can precompute image features
                 with torch.no_grad():
                     image_feature = clip_model.encode_image(curr_img.to(device))
                 curr_imgs.append(image_feature.detach().cpu().numpy()[0].copy())
@@ -214,21 +216,49 @@ def process_images(all_panel_imgs, image_preprocess, clip_model=None, device=Non
 
 
 class AcreDataset(Dataset):
-    def __init__(self, dataset_config, tokenizer, split="train", is_inference=False, clip_model=None, image_preprocess=None, device=None, is_cropped_objs=False):
+    def __init__(
+        self, 
+        dataset_config, 
+        tokenizer, 
+        split="train", 
+        is_inference=False, 
+        clip_model=None, 
+        image_preprocess=None, 
+        device=None, 
+        is_cropped_objs=False
+    ):
         self.split = split
         self.num_examples = NUM_EXAMPLES_DICT[self.split]
         self.dataset_config = dataset_config
         self.is_cropped_objs = is_cropped_objs
+        self.image_preprocess = image_preprocess
+        self.is_train_image_encoder = self.dataset_config.is_train_image_encoder
 
         self.dataset = get_data(dataset_config.data_type, self.split, dataset_config)
         self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs)
 
         if self.is_cropped_objs:
             self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
-            self.processed_objs = process_objects(self.all_cropped_objs, image_preprocess, clip_model=clip_model, device=device)
+            if not self.is_train_image_encoder:
+                # If we do not train image encoder, we can precompute image features
+                self.processed_objs = process_objects(
+                    self.split, 
+                    self.all_cropped_objs, 
+                    image_preprocess, 
+                    clip_model=clip_model, 
+                    device=device,
+                )
         else:
             self.all_panel_imgs = get_panel_images(dataset_config, self.num_examples, self.split)
-            self.processed_imgs = process_images(self.all_panel_imgs, image_preprocess, clip_model=clip_model, device=device)
+            if not self.is_train_image_encoder:
+                # If we do not train image encoder, we can precompute image features
+                self.processed_imgs = process_images(
+                    self.split, 
+                    self.all_panel_imgs, 
+                    image_preprocess, 
+                    clip_model=clip_model, 
+                    device=device,
+                )
 
         self.tokenizer = tokenizer
         self.max_tokens = dataset_config.max_tokens
@@ -237,8 +267,19 @@ class AcreDataset(Dataset):
     def __len__(self):
         return len(self.prompts)
 
+    def preprocess_image_input(self, idx):
+        res = []
+        images = self.all_cropped_objs[idx] if self.is_cropped_objs else self.all_panel_imgs[idx]
+        for image in images:
+            curr_image = self.image_preprocess(Image.fromarray(image)).unsqueeze(0)
+            res.append(curr_image.numpy()[0].copy())
+        return np.array(res)
+
     def __getitem__(self, idx):
-        images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
+        if self.is_train_image_encoder:
+            images = self.preprocess_image_input(idx)
+        else:
+            images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
         object_counts = self.obj_counts[idx]
 
         if not self.is_inference:
