@@ -7,13 +7,14 @@ from llama_recipes.models.slot_attention import SlotAttention
 
 
 class ObjectCentricLlama(nn.Module):
-    def __init__(self, llama_model, clip_model, image_hidden_size, mask_token_id,use_visual_encoder=True, is_train_image_encoder=True):
+    def __init__(self, llama_model, image_model, image_model_name, image_hidden_size, mask_token_id,use_visual_encoder=True, is_train_image_encoder=True):
         super().__init__()
         self.llama_model = llama_model
         self.llama_hidden_size = llama_model.config.hidden_size
 
-        self.clip_model = clip_model
+        self.image_model = image_model
         self.image_hidden_size = image_hidden_size
+        self.image_model_name = image_model_name
 
         self.mask_token_id = mask_token_id
         self.use_visual_encoder = use_visual_encoder
@@ -37,7 +38,9 @@ class ObjectCentricLlama(nn.Module):
             #     eps=1e-8,
             #     hidden_dim=self.llama_hidden_size,
             # )
-            self.projection = nn.Linear(self.image_hidden_size, self.llama_hidden_size, bias=False).half()
+            self.projection = nn.Linear(self.image_hidden_size, self.llama_hidden_size, bias=False)
+            if self.image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
+                self.projection = self.projection.half()
             self.forward = self.forward_original
 
         # if self.use_visual_encoder:
@@ -52,11 +55,19 @@ class ObjectCentricLlama(nn.Module):
         """
         batch_size, num_objects, height = objects.shape[0], objects.shape[1], objects.shape[-1]
         
-        objects = objects.view(-1, 3, height, height)
         object_embs = []
-        for obj in objects:
-            object_emb = self.clip_model.encode_image(obj.unsqueeze(0))  # WARNING: hard-coded [3, 336, 336] for CLIP checkpoint `ViT-L/14@336px``
-            object_embs.append(object_emb)
+        if self.image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
+            objects = objects.view(-1, 3, height, height)
+            for obj in objects:
+                object_emb = self.image_model.encode_image(obj.unsqueeze(0))
+                object_embs.append(object_emb)
+        elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k"]:
+            objects = objects.view(-1, 3, height, height)
+            for obj in objects:
+                object_emb = self.image_model(pixel_values=obj.unsqueeze(0))
+                object_emb = object_emb.last_hidden_state[:, 1:]  # Exclude CLS token
+                object_emb = object_emb.mean(dim=1)  # Aggregate hidden representations to obtain image representation
+                object_embs.append(object_emb)
         object_embs = torch.concatenate(object_embs)
         object_embs =object_embs.view(batch_size, num_objects, -1)
         object_embs = self.projection(object_embs)
