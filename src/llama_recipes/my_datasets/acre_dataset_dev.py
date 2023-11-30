@@ -76,12 +76,22 @@ def get_data(data_type, split, cfg):
     return data
 
 
-def get_objects_str(objects, is_cropped_objs):
-    num_objs = len(objects) if is_cropped_objs else 1
+def get_objects_str(objects, is_cropped_objs, is_slot_attention, num_slots):
+    if is_slot_attention:
+        num_objs = num_slots
+    else:
+        num_objs = len(objects) if is_cropped_objs else 1
     return f"Objects: {' '.join(['<MASK>']*num_objs)}" 
 
 
-def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs):
+def get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots):
+    if is_slot_attention:
+        return num_slots
+    else:
+        return len(panel["objects"]) if is_cropped_objs else 1
+
+
+def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs, is_slot_attention, num_slots):
     prompts, outputs, obj_counts = [],[],[]
 
     for ex_id, ex in tqdm(enumerate(dataset), total=len(dataset)):
@@ -95,18 +105,18 @@ def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs):
         for i in range(dataset_config.num_contexts_per_example):
             panel = ex[i]
             light_state = "unknown" if panel["light_state"] == "undetermined" else panel["light_state"]
-            base_prompt += f"{get_objects_str(panel['objects'], is_cropped_objs)}\nLight: {light_state}\n"
-            num_objs = len(panel["objects"]) if is_cropped_objs else 1
+            base_prompt += f"{get_objects_str(panel['objects'], is_cropped_objs, is_slot_attention, num_slots)}\nLight: {light_state}\n"
+            num_objs = get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots)
             base_obj_counts.append(num_objs)
 
         for i in range(dataset_config.num_contexts_per_example, dataset_config.num_panels_per_example):
             panel = ex[i]
             light_state = IDX_TO_LIGHT_STATE[panel["label"]]
-            prompt = base_prompt + f"{get_objects_str(panel['objects'], is_cropped_objs)}\nLight:"
+            prompt = base_prompt + f"{get_objects_str(panel['objects'], is_cropped_objs, is_slot_attention, num_slots)}\nLight:"
             prompts.append(prompt)
             outputs.append(f"{light_state}")
 
-            num_objs = len(panel["objects"]) if is_cropped_objs else 1
+            num_objs = get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots)
             curr_obj_counts = base_obj_counts.copy()
             curr_obj_counts.append(num_objs)
             obj_counts.append(curr_obj_counts.copy())
@@ -192,7 +202,7 @@ def process_objects(split, all_cropped_objs, image_preprocess, image_model=None,
                     curr_obj = image_preprocess(Image.fromarray(cropped_obj)).unsqueeze(0)
                     with torch.no_grad():
                         image_feature = image_model.encode_image(curr_obj.to(device))
-                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k"]:
+                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
                     curr_obj = image_preprocess(images=Image.fromarray(cropped_obj), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
                         image_feature = image_model(pixel_values=curr_obj)
@@ -216,7 +226,7 @@ def process_images(split, all_panel_imgs, image_preprocess, image_model=None, im
                     curr_img = image_preprocess(Image.fromarray(panel_img)).unsqueeze(0)
                     with torch.no_grad():
                         image_feature = image_model.encode_image(curr_img.to(device))
-                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k"]:
+                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
                     curr_img = image_preprocess(images=Image.fromarray(panel_img), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
                         image_feature = image_model(pixel_values=curr_img)
@@ -240,7 +250,9 @@ class AcreDataset(Dataset):
         image_model_name=None,
         image_preprocess=None, 
         device=None, 
-        is_cropped_objs=False
+        is_cropped_objs=False,
+        is_slot_attention=True, 
+        num_slots=-1,
     ):
         self.split = split
         self.num_examples = NUM_EXAMPLES_DICT[self.split]
@@ -249,9 +261,11 @@ class AcreDataset(Dataset):
         self.image_preprocess = image_preprocess
         self.is_train_image_encoder = self.dataset_config.is_train_image_encoder
         self.image_model_name = image_model_name
+        self.is_slot_attention = is_slot_attention
+        self.num_slots = num_slots
 
         self.dataset = get_data(dataset_config.data_type, self.split, dataset_config)
-        self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs)
+        self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs, self.is_slot_attention, self.num_slots)
 
         if self.is_cropped_objs:
             self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
@@ -292,7 +306,7 @@ class AcreDataset(Dataset):
             if self.image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
                 curr_image = self.image_preprocess(Image.fromarray(image)).unsqueeze(0)
                 res.append(curr_image.numpy()[0].copy())
-            elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k"]:
+            elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
                 curr_image = self.image_preprocess(images=Image.fromarray(image), return_tensors="pt")["pixel_values"]
                 res.append(curr_image.numpy()[0].copy())
         return np.array(res)
