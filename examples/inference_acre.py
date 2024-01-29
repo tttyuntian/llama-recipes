@@ -27,7 +27,8 @@ NUM_EXAMPLES_DICT = {
 class DatasetConfigurations:
     def __init__(self):
         self.seed = 42
-        self.work_root = "/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning"
+        #self.work_root = "/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning"
+        self.work_root = "/oscar/data/csun45/jbyers3/acre-raw"
         self.task = "acre_consistent"
         self.data_split = "iid"
         self.max_tokens = 312
@@ -36,7 +37,8 @@ class DatasetConfigurations:
         self.num_contexts_per_example = 2
         self.num_queries_per_example = 1
         self.num_panels_per_example = 3
-        self.data_size = -1
+        #self.data_size = -1
+        self.data_size = 2
 
 
 def update_dataset_config(config, task, data_type, data_size):
@@ -80,8 +82,8 @@ def main(
     use_fast_kernels: bool=False, # Enable using SDPA from PyTroch Accelerated Transformers, make use Flash Attention and Xformer memory-efficient kernels
     task: str=None, # Task name of ACRE dataset: ["acre", "acre_consistent"]
     data_type: str=None, # Data type of ACRE dataset: ["symbolic", "language"]
-    data_size: int=-1, # Number of data for inference. -1 means all the data.
-    output_dir: str=None,
+    data_size: int=2, # Number of data for inference. -1 means all the data.
+    output_dir: str="/results/inference",
     **kwargs
 ):
     """

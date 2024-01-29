@@ -136,6 +136,7 @@ def get_prompts_and_outputs(dataset, dataset_config, is_inference):
 
             if is_valid:
                 light_state = IDX_TO_LIGHT_STATE[panel["label"]]
+                #light_state = panel["light_state"] #JR not needed edit
                 prompt = base_prompt + f"{get_objects_str(panel['objects'], dataset_config.data_type)}\nLight:"
                 prompts.append(prompt)
                 outputs.append(light_state)
