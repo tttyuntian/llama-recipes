@@ -230,16 +230,15 @@ class ObjectCentricLlama(nn.Module):
     #     return outputs
 
 
-"""
 class VitModel(nn.Module):
     def __init__(self, num_layers):
         super().__init__()
         if num_layers == 2:
+            config = ViTConfig()
             pass
     
     def forward(self):
         pass
-"""
 
 
 class CnnModel(nn.Module):

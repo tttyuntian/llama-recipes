@@ -12,10 +12,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import LlamaForCausalLM, LlamaTokenizer, BeitImageProcessor, BeitModel
+from transformers import LlamaForCausalLM, LlamaTokenizer, BeitImageProcessor, BeitModel, AutoImageProcessor
 
 from llama_recipes.my_datasets.acre_dataset_dev import AcreDataset, AcreDataCollator
-from llama_recipes.models.object_centric_llama import ObjectCentricLlama, CnnModel
+from llama_recipes.models.object_centric_llama import ObjectCentricLlama, CnnModel, VitModel
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -74,7 +74,8 @@ def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, i
     return config
 
 
-def update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir):
+def update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir):
+    train_config.llama_model_name = llama_model_name
     train_config.model_name = model_name
     train_config.quantization = quantization
     train_config.lr = lr
@@ -83,7 +84,6 @@ def update_train_config(train_config, model_name, quantization, lr, num_epochs, 
     train_config.batch_size = batch_size
     train_config.validation_steps = validation_steps
     train_config.is_train_image_encoder = is_train_image_encoder
-    train_config.output_dir = output_dir
     train_config.num_workers = num_workers
     train_config.image_model = image_model
     train_config.num_layers = num_layers
@@ -91,6 +91,7 @@ def update_train_config(train_config, model_name, quantization, lr, num_epochs, 
     train_config.num_slots = num_slots
     train_config.slot_hidden_dim = slot_hidden_dim
     train_config.slot_iters = slot_iters
+    train_config.output_dir = output_dir
     return train_config
 
 
@@ -130,6 +131,7 @@ def eval(model, data, train_config, tokenizer):
 
 
 def main(
+    llama_model_name,
     model_name,
     quantization,
     lr,
@@ -161,7 +163,16 @@ def main(
     dataset_config.rendered_data_root = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/ACRE/rendered_data/{dataset_config.task}/IID"
 
     train_config = TrainConfigurations()
-    train_config = update_train_config(train_config, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir)
+    train_config = update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir)
+
+    train_config.output_path = os.path.join(
+        train_config.output_dir, 
+        f"{dataset_config.task}_{dataset_config.data_split}_{dataset_config.data_type}",
+        f"{train_config.llama_model_name}|T{1 if train_config.is_train_image_encoder else 0}-{train_config.image_model}-{train_config.num_layers}|S{1 if train_config.is_slot_attention else 0}-N{train_config.num_slots}-D{train_config.slot_hidden_dim}-I{train_config.slot_iters}|lr-{train_config.lr}|e-{train_config.num_epochs}|bs-{train_config.batch_size * train_config.gradient_accumulation_steps}|",
+    )
+    os.makedirs(train_config.output_path, exist_ok=True)
+
+    train_config.ckpt_output_path = os.path.join(train_config.output_path, "image_encoder.pt")
 
     print(dataset_config.__dict__)
     print(train_config.__dict__)
@@ -185,6 +196,9 @@ def main(
         elif train_config.image_model in ["cnn"]:
             image_model = CnnModel(train_config.num_layers).to(device)
             image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+        elif train_config.image_model in ["vit"]:
+            image_model = VitModel(train_config.num_layers).to(device)
+            image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
 
     else:
         if train_config.image_model in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
@@ -195,6 +209,10 @@ def main(
         elif train_config.image_model in ["cnn"]:
             image_model = CnnModel(train_config.num_layers).to(device)
             image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+        elif train_config.image_model in ["vit"]:
+            image_model = VitModel(train_config.num_layers).to(device)
+            image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+
 
     image_model.eval()
 
@@ -389,10 +407,21 @@ def main(
                 print(f"Best checkpoint found at Epoch {epoch_id + 1} with accuracy of {accuracy:8.6f}")
                 print("*"*70, flush=True)
 
-    # accuracy_test = eval(model, dataset_test, train_config, tokenizer)        
-    # print(f"Test accuracy: {accuracy_test:8.6f}", flush=True)
+                # Save image encoder
+                image_encoder_state_dict = {}
+                for k, params in model.state_dict().items():
+                    if not k.startswith("llama_model"):
+                        image_encoder_state_dict[k] = params
+                torch.save(image_encoder_state_dict, train_config.ckpt_output_path)
+
+    # Test with best checkpoint
+    best_image_encoder_state_dict = torch.load(train_config.ckpt_output_path)
+    model.load_state_dict(best_image_encoder_state_dict, strict=False)
+    accuracy_test = eval(model, dataset_test, train_config, tokenizer)        
     print("="*70, flush=True)
     print(f"Best validation accuracy: {best_accuracy:8.6f} at epoch {best_epoch_id}")
+    print(f"Test accuracy: {accuracy_test:8.6f}", flush=True)
+    print(f"Checkpoint saved to {train_config.output_dir}")
     print("Done!", flush=True)
 
 
