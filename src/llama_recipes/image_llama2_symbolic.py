@@ -51,7 +51,7 @@ class TrainConfigurations:
         self.num_workers = 0
 
 
-def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, image_model_name, is_train_image_encoder, is_slot_attention, num_slots):
+def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, image_model_name, is_train_image_encoder, is_slot_attention, num_slots, is_symbolic_representations):
     config.task = task
     config.data_type = data_type
     config.data_size = data_size
@@ -60,6 +60,7 @@ def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, i
     config.is_train_image_encoder = is_train_image_encoder
     config.is_slot_attention = is_slot_attention
     config.num_slots = num_slots
+    config.is_symbolic_representations = is_symbolic_representations
     if config.task == "acre":
         config.max_tokens = 312
         config.num_contexts_per_example = 6
@@ -75,7 +76,7 @@ def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, i
     return config
 
 
-def update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir):
+def update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, is_symbolic_representations, output_dir):
     train_config.llama_model_name = llama_model_name
     train_config.model_name = model_name
     train_config.quantization = quantization
@@ -95,6 +96,7 @@ def update_train_config(train_config, llama_model_name, model_name, quantization
     train_config.num_slots = num_slots
     train_config.slot_hidden_dim = slot_hidden_dim
     train_config.slot_iters = slot_iters
+    train_config.is_symbolic_representations = is_symbolic_representations
     train_config.output_dir = output_dir
     return train_config
 
@@ -158,19 +160,20 @@ def main(
     data_type: str=None, # Data type of ACRE dataset: ["symbolic", "language"]
     data_size: int=-1, # Number of data for inference. -1 means all the data.
     is_cropped_objs: bool=False, # Whether to use cropped objects as image inputs
+    is_symbolic_representations: bool=True, # Whether to use symbolic representations as image inputs
     output_dir: str=None,
     **kwargs,
 ):
     # Prepare configurations
     print("Prepare configurations", flush=True)
     dataset_config = DatasetConfigurations()
-    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs, image_model, is_train_image_encoder, is_slot_attention, num_slots)
+    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs, image_model, is_train_image_encoder, is_slot_attention, num_slots, is_symbolic_representations)
     dataset_config.data_root = os.path.join(dataset_config.work_root, "data", dataset_config.task)
     dataset_config.data_split_root = os.path.join(dataset_config.data_root, dataset_config.data_split)
     dataset_config.rendered_data_root = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/ACRE/rendered_data/{dataset_config.task}/IID"
 
     train_config = TrainConfigurations()
-    train_config = update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir)
+    train_config = update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, is_symbolic_representations, output_dir)
 
     train_config.output_path = os.path.join(
         train_config.output_dir, 
@@ -229,9 +232,12 @@ def main(
                 intermediate_size=train_config.image_model_intermediate_size,
             ).to(device)
             image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+        elif train_config.is_symbolic_representations:
+            image_model = None
+            image_preprocess = None
 
-
-    image_model.eval()
+    if image_model:
+        image_model.eval()
 
     # If we train image_model, freeze image_model all layers except the last
     if train_config.is_train_image_encoder:
@@ -275,6 +281,8 @@ def main(
         image_hidden_size = image_model.image_hidden_size
     elif train_config.image_model == "vit":
         image_hidden_size = image_model.config.hidden_size
+    elif train_config.is_symbolic_representations:
+        image_hidden_size = 48
     model = ObjectCentricLlama(
         llama_model, 
         image_model, 
@@ -283,6 +291,7 @@ def main(
         mask_token_id=tokenizer.mask_token_id, 
         use_visual_encoder=True, 
         is_train_image_encoder=train_config.is_train_image_encoder,
+        is_symbolic_representations=train_config.is_symbolic_representations,
         is_slot_attention=train_config.is_slot_attention,
         num_slots=train_config.num_slots,
         slot_hidden_dim=train_config.slot_hidden_dim,
@@ -346,6 +355,7 @@ def main(
         is_cropped_objs=dataset_config.is_cropped_objs,
         is_slot_attention=dataset_config.is_slot_attention, 
         num_slots=dataset_config.num_slots,
+        is_symbolic_representations=dataset_config.is_symbolic_representations,
     )
     dataset_valid = AcreDataset(
         dataset_config, 
@@ -359,6 +369,7 @@ def main(
         is_cropped_objs=dataset_config.is_cropped_objs,
         is_slot_attention=dataset_config.is_slot_attention, 
         num_slots=dataset_config.num_slots,
+        is_symbolic_representations=dataset_config.is_symbolic_representations,
     )
     dataset_test = AcreDataset(
         dataset_config, 
@@ -372,6 +383,7 @@ def main(
         is_cropped_objs=dataset_config.is_cropped_objs,
         is_slot_attention=dataset_config.is_slot_attention, 
         num_slots=dataset_config.num_slots,
+        is_symbolic_representations=dataset_config.is_symbolic_representations,
     )
 
     # Start training

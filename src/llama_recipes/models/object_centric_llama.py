@@ -17,6 +17,7 @@ class ObjectCentricLlama(nn.Module):
         mask_token_id,
         use_visual_encoder=True, 
         is_train_image_encoder=True, 
+        is_symbolic_representations=False,
         is_slot_attention=True,
         num_slots=-1,
         slot_hidden_dim=-1,
@@ -33,6 +34,7 @@ class ObjectCentricLlama(nn.Module):
         self.mask_token_id = mask_token_id
         self.use_visual_encoder = use_visual_encoder
         self.is_train_image_encoder = is_train_image_encoder
+        self.is_symbolic_representations = is_symbolic_representations
         self.is_slot_attention = is_slot_attention
 
         if self.is_slot_attention:
@@ -60,12 +62,13 @@ class ObjectCentricLlama(nn.Module):
         else:
             if not self.is_train_image_encoder:
                 # If we don't train image encoder, then we have an MLP projection
+                # This works with precomputed features from pretrained visual encoder, or with symbolic representations of panels
                 self.projection = nn.Sequential(
                     nn.Linear(self.image_hidden_size, self.llama_hidden_size, bias=False),
                     nn.ReLU(),
                     nn.Linear(self.llama_hidden_size, self.llama_hidden_size, bias=False)
                 ).float()
-                self.forward = self.forward_with_clip_features
+                self.forward = self.forward_with_precomputed_features
             else:
                 # If we train image encoder, we have a linear projection or a slot attention
 
@@ -159,6 +162,10 @@ class ObjectCentricLlama(nn.Module):
             object_embs = self.image_model(objects)  # [num_images, output_channels, conv_height, conv_width]
             object_embs = object_embs.flatten(start_dim=1, end_dim=-1)  # [num_images, output_channels * conv_height * conv_width]
             object_embs = object_embs.view(batch_size, num_objects, -1)  # [batch_size, num_objects, image_hidden_dim]
+        elif self.image_model_name in ["vit"]:
+            objects = objects.view(-1, 3, height, height)
+            object_embs = self.image_model(objects).last_hidden_state[:,0,:]  # [num_images, image_hidden_dim]
+            object_embs = object_embs.view(batch_size, num_objects, -1)  # [batch_size, num_objects, image_hidden_dim]
             
         object_embs = self.projection(object_embs)
 
@@ -190,7 +197,7 @@ class ObjectCentricLlama(nn.Module):
         return pooled_logits, logits, loss
 
 
-    def forward_with_clip_features(self, objects, object_counts, input_ids, labels, attention_mask, seq_lengths):
+    def forward_with_precomputed_features(self, objects, object_counts, input_ids, labels, attention_mask, seq_lengths):
         batch_size = objects.shape[0]
         object_embs = self.projection(objects)
         inputs_embeds = []
@@ -231,14 +238,20 @@ class ObjectCentricLlama(nn.Module):
 
 
 class VitModel(nn.Module):
-    def __init__(self, num_layers):
+    def __init__(self, num_layers, num_attention_heads, hidden_size, intermediate_size):
         super().__init__()
-        if num_layers == 2:
-            config = ViTConfig()
-            pass
-    
-    def forward(self):
-        pass
+        self.config = ViTConfig(
+            hidden_size=hidden_size,
+            num_hidden_layers=num_layers,
+            num_attention_heads=num_attention_heads,
+            intermeidate_size=intermediate_size,    
+        )
+        self.vit = ViTModel(self.config)
+        
+    def forward(self, inputs, output_attentions=False):
+        outputs = self.vit(pixel_values=inputs, output_attentions=output_attentions)
+        return outputs
+        
 
 
 class CnnModel(nn.Module):

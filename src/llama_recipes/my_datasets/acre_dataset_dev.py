@@ -201,14 +201,14 @@ def process_objects(split, all_cropped_objs, image_preprocess, image_model=None,
                 if image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
                     curr_obj = image_preprocess(Image.fromarray(cropped_obj)).unsqueeze(0)
                     with torch.no_grad():
-                        image_feature = image_model.encode_image(curr_obj.to(device))
+                        image_features = image_model.encode_image(curr_obj.to(device))
                 elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
                     curr_obj = image_preprocess(images=Image.fromarray(cropped_obj), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
-                        image_feature = image_model(pixel_values=curr_obj)
-                        image_feature = image_feature.last_hidden_state[:,1:]  # Exclude CLS token
+                        image_features = image_model(pixel_values=curr_obj)
+                        image_features = image_feature.last_hidden_state[:,1:]  # Exclude CLS token
                         image_features = image_features.mean(dim=1)  # Aggregate hidden representations to obtain image representation
-                curr_objs.append(image_feature.detach().cpu().numpy()[0].copy())
+                curr_objs.append(image_features.detach().cpu().numpy()[0].copy())
             else:
                 curr_objs.append(curr_obj.numpy()[0].copy())
         res.append(np.array(curr_objs.copy()))
@@ -225,18 +225,49 @@ def process_images(split, all_panel_imgs, image_preprocess, image_model=None, im
                 if image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
                     curr_img = image_preprocess(Image.fromarray(panel_img)).unsqueeze(0)
                     with torch.no_grad():
-                        image_feature = image_model.encode_image(curr_img.to(device))
+                        image_features = image_model.encode_image(curr_img.to(device))
                 elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
                     curr_img = image_preprocess(images=Image.fromarray(panel_img), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
-                        image_feature = image_model(pixel_values=curr_img)
-                        image_feature = image_feature.last_hidden_state[:,1:]  # Exclude CLS token
+                        image_features = image_model(pixel_values=curr_img)
+                        image_features = image_features.last_hidden_state[:,1:]  # Exclude CLS token
                         image_features = image_features.mean(dim=1)  # Aggregate hidden representations to obtain image representation
-                curr_imgs.append(image_feature.detach().cpu().numpy()[0].copy())
+                curr_imgs.append(image_features.detach().cpu().numpy()[0].copy())
             else:
                 curr_imgs.append(curr_img.numpy()[0].copy())
         res.append(np.array(curr_imgs.copy()))
     return res
+
+
+def get_multihot_panel_representation(objects):
+    res = [1e-3] * 48  # there are 48 possible objects
+    for obj in objects:
+        res[obj] = 1
+    return res
+
+
+def get_symbolic_representations(data, dataset_config, num_examples, split):
+    all_symbolic_representations = []
+    for ex_id in tqdm(range(num_examples), desc=f"{split} get_symbolic_representations"):
+
+        if ex_id == dataset_config.data_size:
+            break
+
+        ex = data[ex_id]
+        base_panel_reprs = []
+        for context_panel_id in range(dataset_config.num_contexts_per_example):
+            panel = ex[context_panel_id]["objects"]
+            multihot_panel_repr = get_multihot_panel_representation(panel)
+            base_panel_reprs.append(multihot_panel_repr.copy())
+
+        for query_panel_id in range(dataset_config.num_contexts_per_example, dataset_config.num_panels_per_example):
+            panel = ex[query_panel_id]["objects"]
+            multihot_panel_repr = get_multihot_panel_representation(panel)
+            curr_panel_reprs = base_panel_reprs.copy()
+            curr_panel_reprs.append(multihot_panel_repr.copy())
+            all_symbolic_representations.append(curr_panel_reprs.copy())
+        
+    return np.array(all_symbolic_representations)
 
 
 class AcreDataset(Dataset):
@@ -253,6 +284,7 @@ class AcreDataset(Dataset):
         is_cropped_objs=False,
         is_slot_attention=True, 
         num_slots=-1,
+        is_symbolic_representations=False,
     ):
         self.split = split
         self.num_examples = NUM_EXAMPLES_DICT[self.split]
@@ -263,34 +295,41 @@ class AcreDataset(Dataset):
         self.image_model_name = image_model_name
         self.is_slot_attention = is_slot_attention
         self.num_slots = num_slots
+        self.is_symbolic_representations = is_symbolic_representations
 
         self.dataset = get_data(dataset_config.data_type, self.split, dataset_config)
         self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs, self.is_slot_attention, self.num_slots)
 
-        if self.is_cropped_objs:
-            self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
-            if not self.is_train_image_encoder:
-                # If we do not train image encoder, we can precompute image features
-                self.processed_objs = process_objects(
-                    self.split, 
-                    self.all_cropped_objs, 
-                    image_preprocess, 
-                    image_model=image_model, 
-                    image_model_name=self.image_model_name,
-                    device=device,
-                )
+        if self.is_symbolic_representations:
+            # NOTE: Use symbolic representations for each panel. Only for debugging purpose.
+            assert not self.is_cropped_objs, "Symbolic representations do not work with object centric representations."
+            assert not self.is_train_image_encoder, "When using symbolic representations, no image encoder needs be trained."
+            self.all_symbolic_representations = get_symbolic_representations(self.dataset, dataset_config, self.num_examples, self.split)
         else:
-            self.all_panel_imgs = get_panel_images(dataset_config, self.num_examples, self.split)
-            if not self.is_train_image_encoder:
-                # If we do not train image encoder, we can precompute image features
-                self.processed_imgs = process_images(
-                    self.split, 
-                    self.all_panel_imgs, 
-                    image_preprocess, 
-                    image_model=image_model, 
-                    image_model_name=self.image_model_name,
-                    device=device,
-                )
+            if self.is_cropped_objs:
+                self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
+                if not self.is_train_image_encoder:
+                    # If we do not train image encoder, we can precompute image features
+                    self.processed_objs = process_objects(
+                        self.split, 
+                        self.all_cropped_objs, 
+                        image_preprocess, 
+                        image_model=image_model, 
+                        image_model_name=self.image_model_name,
+                        device=device,
+                    )
+            else:
+                self.all_panel_imgs = get_panel_images(dataset_config, self.num_examples, self.split)
+                if not self.is_train_image_encoder:
+                    # If we do not train image encoder, we can precompute image features
+                    self.processed_imgs = process_images(
+                        self.split, 
+                        self.all_panel_imgs, 
+                        image_preprocess, 
+                        image_model=image_model, 
+                        image_model_name=self.image_model_name,
+                        device=device,
+                    )
 
         self.tokenizer = tokenizer
         self.max_tokens = dataset_config.max_tokens
@@ -306,7 +345,7 @@ class AcreDataset(Dataset):
             if self.image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
                 curr_image = self.image_preprocess(Image.fromarray(image)).unsqueeze(0)
                 res.append(curr_image.numpy()[0].copy())
-            elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
+            elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn", "vit"]:
                 curr_image = self.image_preprocess(images=Image.fromarray(image), return_tensors="pt")["pixel_values"]
                 res.append(curr_image.numpy()[0].copy())
         return np.array(res)
@@ -315,7 +354,10 @@ class AcreDataset(Dataset):
         if self.is_train_image_encoder:
             images = self.preprocess_image_input(idx)
         else:
-            images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
+            if self.is_symbolic_representations:
+                images = self.all_symbolic_representations[idx]
+            else:
+                images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
         object_counts = self.obj_counts[idx]
 
         if not self.is_inference:
