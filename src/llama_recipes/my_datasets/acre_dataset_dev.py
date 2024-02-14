@@ -202,11 +202,11 @@ def process_objects(split, all_cropped_objs, image_preprocess, image_model=None,
                     curr_obj = image_preprocess(Image.fromarray(cropped_obj)).unsqueeze(0)
                     with torch.no_grad():
                         image_features = image_model.encode_image(curr_obj.to(device))
-                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
+                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn", "vit"]:
                     curr_obj = image_preprocess(images=Image.fromarray(cropped_obj), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
                         image_features = image_model(pixel_values=curr_obj)
-                        image_features = image_feature.last_hidden_state[:,1:]  # Exclude CLS token
+                        image_features = image_features.last_hidden_state[:,1:]  # Exclude CLS token
                         image_features = image_features.mean(dim=1)  # Aggregate hidden representations to obtain image representation
                 curr_objs.append(image_features.detach().cpu().numpy()[0].copy())
             else:
@@ -226,7 +226,7 @@ def process_images(split, all_panel_imgs, image_preprocess, image_model=None, im
                     curr_img = image_preprocess(Image.fromarray(panel_img)).unsqueeze(0)
                     with torch.no_grad():
                         image_features = image_model.encode_image(curr_img.to(device))
-                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn"]:
+                elif image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn", "vit"]:
                     curr_img = image_preprocess(images=Image.fromarray(panel_img), return_tensors="pt")["pixel_values"].to(device)
                     with torch.no_grad():
                         image_features = image_model(pixel_values=curr_img)
@@ -296,44 +296,45 @@ class AcreDataset(Dataset):
         self.is_slot_attention = is_slot_attention
         self.num_slots = num_slots
         self.is_symbolic_representations = is_symbolic_representations
+        self.is_inference = is_inference
 
         self.dataset = get_data(dataset_config.data_type, self.split, dataset_config)
         self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs, self.is_slot_attention, self.num_slots)
 
-        if self.is_symbolic_representations:
-            # NOTE: Use symbolic representations for each panel. Only for debugging purpose.
-            assert not self.is_cropped_objs, "Symbolic representations do not work with object centric representations."
-            assert not self.is_train_image_encoder, "When using symbolic representations, no image encoder needs be trained."
-            self.all_symbolic_representations = get_symbolic_representations(self.dataset, dataset_config, self.num_examples, self.split)
-        else:
-            if self.is_cropped_objs:
-                self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
-                if not self.is_train_image_encoder:
-                    # If we do not train image encoder, we can precompute image features
-                    self.processed_objs = process_objects(
-                        self.split, 
-                        self.all_cropped_objs, 
-                        image_preprocess, 
-                        image_model=image_model, 
-                        image_model_name=self.image_model_name,
-                        device=device,
-                    )
+        if not self.is_inference:
+            if self.is_symbolic_representations:
+                # NOTE: Use symbolic representations for each panel. Only for debugging purpose.
+                assert not self.is_cropped_objs, "Symbolic representations do not work with object centric representations."
+                assert not self.is_train_image_encoder, "When using symbolic representations, no image encoder needs be trained."
+                self.all_symbolic_representations = get_symbolic_representations(self.dataset, dataset_config, self.num_examples, self.split)
             else:
-                self.all_panel_imgs = get_panel_images(dataset_config, self.num_examples, self.split)
-                if not self.is_train_image_encoder:
-                    # If we do not train image encoder, we can precompute image features
-                    self.processed_imgs = process_images(
-                        self.split, 
-                        self.all_panel_imgs, 
-                        image_preprocess, 
-                        image_model=image_model, 
-                        image_model_name=self.image_model_name,
-                        device=device,
-                    )
+                if self.is_cropped_objs:
+                    self.all_cropped_objs = get_cropped_objects(dataset_config, self.num_examples, self.split)
+                    if not self.is_train_image_encoder:
+                        # If we do not train image encoder, we can precompute image features
+                        self.processed_objs = process_objects(
+                            self.split, 
+                            self.all_cropped_objs, 
+                            image_preprocess, 
+                            image_model=image_model, 
+                            image_model_name=self.image_model_name,
+                            device=device,
+                        )
+                else:
+                    self.all_panel_imgs = get_panel_images(dataset_config, self.num_examples, self.split)
+                    if not self.is_train_image_encoder:
+                        # If we do not train image encoder, we can precompute image features
+                        self.processed_imgs = process_images(
+                            self.split, 
+                            self.all_panel_imgs, 
+                            image_preprocess, 
+                            image_model=image_model, 
+                            image_model_name=self.image_model_name,
+                            device=device,
+                        )
 
         self.tokenizer = tokenizer
         self.max_tokens = dataset_config.max_tokens
-        self.is_inference = is_inference
 
     def __len__(self):
         return len(self.prompts)
@@ -351,13 +352,15 @@ class AcreDataset(Dataset):
         return np.array(res)
 
     def __getitem__(self, idx):
-        if self.is_train_image_encoder:
-            images = self.preprocess_image_input(idx)
-        else:
-            if self.is_symbolic_representations:
-                images = self.all_symbolic_representations[idx]
+        images = None
+        if not self.is_inference:
+            if self.is_train_image_encoder:
+                images = self.preprocess_image_input(idx)
             else:
-                images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
+                if self.is_symbolic_representations:
+                    images = self.all_symbolic_representations[idx]
+                else:
+                    images = self.processed_objs[idx] if self.is_cropped_objs else self.processed_imgs[idx]
         object_counts = self.obj_counts[idx]
 
         if not self.is_inference:
@@ -370,7 +373,7 @@ class AcreDataset(Dataset):
             input_ids_mask = input_ids_mask.float()
         
         else:
-            # Assume batch_size=1 during model inference
+            # Assume batch_size=1 during model inference with ONLY language
             prompt, output = self.prompts[idx], self.outputs[idx]
             input_ids = torch.tensor(
                 self.tokenizer.encode(prompt), dtype=torch.int64
@@ -410,11 +413,12 @@ class AcreDataCollator:
         batch["labels"] = torch.LongTensor([f["label"][0] for f in features if len(f["label"]) == 1])
 
         # Prepare padded objects
-        max_num_objs = max([len(f["objects"]) for f in features])
-        objects_shape = (batch_size, max_num_objs) + tuple(features[0]["objects"].shape[1:])
-        objects = np.zeros(objects_shape)
-        for i, f in enumerate(features):
-            objects[i, :len(f["objects"])] = np.array(f["objects"]).copy()
-        batch["objects"] = torch.Tensor(objects)
-        batch["object_counts"] = torch.LongTensor([sum(f["object_counts"]) for f in features])
+        if features[0]["objects"] is not None:
+            max_num_objs = max([len(f["objects"]) for f in features])
+            objects_shape = (batch_size, max_num_objs) + tuple(features[0]["objects"].shape[1:])
+            objects = np.zeros(objects_shape)
+            for i, f in enumerate(features):
+                objects[i, :len(f["objects"])] = np.array(f["objects"]).copy()
+            batch["objects"] = torch.Tensor(objects)
+            batch["object_counts"] = torch.LongTensor([sum(f["object_counts"]) for f in features])
         return batch 
