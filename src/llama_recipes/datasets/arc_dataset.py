@@ -62,7 +62,6 @@ def get_prompts_and_outputs(dataset, dataset_config, is_inference):
 
         correct_output = f"{question['output']}"
 
-        base_prompt = "To cook a pizza I first "
 
         prompts.append(base_prompt)
         outputs.append(correct_output)

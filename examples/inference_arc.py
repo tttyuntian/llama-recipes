@@ -29,39 +29,12 @@ class DatasetConfigurations:
     def __init__(self):
         self.seed = 42
         self.work_root = "/oscar/data/csun45/jbyers3/ARC"  # this is a cloned repo from https://github.com/fchollet/ARC
-        self.max_tokens = 1000
-        """
-        self.task = "acre_consistent"
-        self.data_split = "iid"
-        self.max_tokens = 312
-        self.data_type = "language"
-        self.kshot = 0
-        self.num_contexts_per_example = 2
-        self.num_queries_per_example = 1
-        self.num_panels_per_example = 3
-        """
-
+        self.max_tokens = 700
         self.data_size = -1
 
 
 def update_dataset_config(config, task, data_type, data_size):
-    #config.task = task
-    #config.data_type = data_type
     config.data_size = data_size
-    """
-    if config.task == "acre":
-        config.max_tokens = 312
-        config.num_contexts_per_example = 6
-        config.num_queries_per_example = 4
-        config.num_panels_per_example = 10
-    elif config.task == "acre_consistent":
-        config.max_tokens = 196
-        config.num_contexts_per_example = 2
-        config.num_queries_per_example = 1
-        config.num_panels_per_example = 3
-    config.data_root = os.path.join(config.work_root, "data", config.task)
-    config.data_split_root = os.path.join(config.data_root, config.data_split)
-    """
     config.data_root = os.path.join(config.work_root, "data")
     return config
 
@@ -138,26 +111,12 @@ def main(
             outputs = model(input_ids=batch["input_ids"])
 
         
-        #output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-1], skip_special_tokens=True)  # original line
-
-        print()
-        print()
-        print()
-        print("logits: " + str(outputs.logits))
-        print("logits size: " + str(outputs.logits.size()))
-        print("first: " + str(outputs.logits.argmax(dim=-1)))
-        print("second: " + str(outputs.logits.argsort(dim=-1, descending=True)))
-
         first_elements = outputs.logits.argsort(dim=-1)[0][:, -1]
-        #print("first elements: " + str(first_elements))
         first_row = outputs.logits.argsort(dim=-1)[0][0]
-        #print("first row: " + str(first_row))
 
-
-
+        #output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-1], skip_special_tokens=True)  # original line
         output_text = tokenizer.decode(first_elements, skip_special_tokens=True)
-        print("output_text: " + str(output_text))
-        
+        #print(output_text)  # allows you to see output text
         
         responses.append(output_text)
         
