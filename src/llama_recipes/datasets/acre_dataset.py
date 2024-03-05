@@ -136,7 +136,6 @@ def get_prompts_and_outputs(dataset, dataset_config, is_inference):
 
             if is_valid:
                 light_state = IDX_TO_LIGHT_STATE[panel["label"]]
-                #light_state = panel["light_state"] #JR not needed edit
                 prompt = base_prompt + f"{get_objects_str(panel['objects'], dataset_config.data_type)}\nLight:"
                 prompts.append(prompt)
                 outputs.append(light_state)
@@ -148,7 +147,8 @@ class AcreDataset(Dataset):
         self.dataset_config = dataset_config
         self.dataset = get_data(dataset_config.data_type, split, dataset_config)
         self.prompts, self.outputs = get_prompts_and_outputs(self.dataset, dataset_config, is_inference)
-
+        
+        
         self.tokenizer = tokenizer
         self.max_tokens = dataset_config.max_tokens
         self.is_inference = is_inference
