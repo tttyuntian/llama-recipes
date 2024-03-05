@@ -42,10 +42,12 @@ class DatasetConfigurations:
         # self.train_query_type = "skip"
 
 
-def update_dataset_config(config, task, data_type, data_size):
+def update_dataset_config(config, task, data_type, data_size, kshot, is_language_inference):
     config.task = task
     config.data_type = data_type
     config.data_size = data_size
+    config.kshot = kshot
+    config.is_language_inference = is_language_inference
     if config.task == "acre":
         config.max_tokens = 312
         config.num_contexts_per_example = 6
@@ -137,12 +139,14 @@ def main(
     data_type: str=None, # Data type of ACRE dataset: ["symbolic", "language"]
     data_size: int=-1, # Number of data for inference. -1 means all the data.
     # train_query_type: str="skip", # 
+    kshot: int=0, # Number of in-context examples
+    is_language_inference: bool=False, # Whether this is pure language inference.
     output_dir: str=None,
     **kwargs
 ):
     # Prepare dataset configurations
     dataset_config = DatasetConfigurations()
-    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size)
+    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, kshot, is_language_inference)
     print(dataset_config.__dict__)
 
     # Prepare prompts

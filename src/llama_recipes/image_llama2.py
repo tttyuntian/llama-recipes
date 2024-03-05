@@ -1,5 +1,6 @@
 import fire
 import json
+import random
 import os
 import sys
 
@@ -12,30 +13,48 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import LlamaForCausalLM, LlamaTokenizer, BeitImageProcessor, BeitModel, AutoImageProcessor
+from transformers import LlamaForCausalLM, LlamaTokenizer, BeitImageProcessor, BeitModel, ViTImageProcessor, AutoImageProcessor
 
 from llama_recipes.my_datasets.acre_dataset_dev import AcreDataset, AcreDataCollator
+from llama_recipes.my_datasets.raven_fair_dataset import RavenFairDataset, RavenFairDataCollator
 from llama_recipes.models.object_centric_llama import ObjectCentricLlama, CnnModel, VitModel
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+
 class DatasetConfigurations:
-    def __init__(self):
-        self.seed = 42
-        self.work_root = "/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning"
-        self.task = "acre_consistent"
-        self.data_split = "iid"
-        self.max_tokens = 312
-        self.data_type = "language"
-        self.kshot = 0
-        self.num_contexts_per_example = 2
-        self.num_queries_per_example = 1
-        self.num_panels_per_example = 3
-        self.data_size = -1
-        self.is_cropped_objs = False
-        self.is_train_image_encoder = False
+    def __init__(self, task):
+        if task in ["acre", "acre_consistent"]:
+            self.seed = 42
+            self.work_root = "/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning"
+            self.task = "acre_consistent"
+            self.data_split = "iid"
+            self.max_tokens = 312
+            self.data_type = "language"
+            self.kshot = 0
+            self.num_contexts_per_example = 2
+            self.num_queries_per_example = 1
+            self.num_panels_per_example = 3
+            self.data_size = -1
+            self.is_cropped_objs = False
+            self.is_train_image_encoder = False
+        elif task == "raven_fair":
+            self.seed = 42
+            self.data_root = "/users/tyun/data/tyun/llm_causal_reasoning/RAVEN_FAIR/data/RAVEN-F"
+            self.figure_configuration = None # ["center_single", "in_distribute_four_out_center_single", "distribute_four", "distribute_nine", "up_center_single_down_center_single", "in_center_single_out_center_single", "left_center_single_right_center_single"]
+            self.kshot = 0
+            self.data_size = -1
+            self.is_train_image_encoder = True
+        else:
+            raise(f"Not supported dataset: {task}")
 
 
 class TrainConfigurations:
@@ -75,7 +94,7 @@ def update_dataset_config(config, task, data_type, data_size, is_cropped_objs, i
     return config
 
 
-def update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir):
+def update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, patch_size, output_dir):
     train_config.llama_model_name = llama_model_name
     train_config.model_name = model_name
     train_config.quantization = quantization
@@ -95,11 +114,12 @@ def update_train_config(train_config, llama_model_name, model_name, quantization
     train_config.num_slots = num_slots
     train_config.slot_hidden_dim = slot_hidden_dim
     train_config.slot_iters = slot_iters
+    train_config.patch_size = patch_size
     train_config.output_dir = output_dir
     return train_config
 
 
-def eval(model, data, train_config, tokenizer):
+def eval(model, data, task, train_config, tokenizer):
     if train_config.is_train_image_encoder:
         model.image_model.eval()
         model.projection.eval()
@@ -109,7 +129,10 @@ def eval(model, data, train_config, tokenizer):
     else:
         model.projection.eval()
 
-    loader = DataLoader(data, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=False, drop_last=False, num_workers=train_config.num_workers)
+    if task in ["acre", "acre_consistent"]:
+            loader = DataLoader(data, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=False, drop_last=False, num_workers=train_config.num_workers)
+    elif task == "raven_fair":
+        loader = DataLoader(data, batch_size=train_config.batch_size, collate_fn=RavenFairDataCollator(tokenizer), pin_memory=True, shuffle=False, drop_last=False, num_workers=train_config.num_workers)
 
     all_predictions, all_labels = [],[]
     for batch in loader:
@@ -154,33 +177,57 @@ def main(
     num_slots: int=-1, # Number of slots in slot attention layer
     slot_hidden_dim: int=-1, # Size of hidden dimension of slot attention layer
     slot_iters: int=-1, # Number of iterations of slot attention layer
-    task: str=None, # Task name of ACRE dataset: ["acre", "acre_consistent"]
+    task: str=None, # Task name of supported dataset: ["acre", "acre_consistent", "raven_fair"]
     data_type: str=None, # Data type of ACRE dataset: ["symbolic", "language"]
     data_size: int=-1, # Number of data for inference. -1 means all the data.
     is_cropped_objs: bool=False, # Whether to use cropped objects as image inputs
+    figure_configuration: str=None, # Figure configuration for RAVEN-FAIR dataset
+    image_height: int=224, # Height and width of images
+    patch_size: int=16, # Patch size of image model
     output_dir: str=None,
     **kwargs,
 ):
     # Prepare configurations
     print("Prepare configurations", flush=True)
-    dataset_config = DatasetConfigurations()
-    dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs, image_model, is_train_image_encoder, is_slot_attention, num_slots)
-    dataset_config.data_root = os.path.join(dataset_config.work_root, "data", dataset_config.task)
-    dataset_config.data_split_root = os.path.join(dataset_config.data_root, dataset_config.data_split)
-    dataset_config.rendered_data_root = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/ACRE/rendered_data/{dataset_config.task}/IID"
 
     train_config = TrainConfigurations()
-    train_config = update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, output_dir)
+    train_config = update_train_config(train_config, llama_model_name, model_name, quantization, lr, num_epochs, gradient_accumulation_steps, batch_size, validation_steps, image_model, num_layers, num_attention_heads, image_model_hidden_size, image_model_intermediate_size, num_workers, is_train_image_encoder, is_slot_attention, num_slots, slot_hidden_dim, slot_iters, patch_size, output_dir)
 
-    train_config.output_path = os.path.join(
-        train_config.output_dir, 
-        f"{dataset_config.task}_{dataset_config.data_split}_{dataset_config.data_type}",
-        f"{train_config.llama_model_name}|T{1 if train_config.is_train_image_encoder else 0}-{train_config.image_model}-{train_config.num_layers}|S{1 if train_config.is_slot_attention else 0}-N{train_config.num_slots}-D{train_config.slot_hidden_dim}-I{train_config.slot_iters}|lr-{train_config.lr}|e-{train_config.num_epochs}|bs-{train_config.batch_size * train_config.gradient_accumulation_steps}|",
-    )
+    dataset_config = DatasetConfigurations(task)
+    if task in ["acre", "acre_consistent"]:
+        dataset_config = update_dataset_config(dataset_config, task, data_type, data_size, is_cropped_objs, image_model, is_train_image_encoder, is_slot_attention, num_slots)
+        dataset_config.data_root = os.path.join(dataset_config.work_root, "data", dataset_config.task)
+        dataset_config.data_split_root = os.path.join(dataset_config.data_root, dataset_config.data_split)
+        dataset_config.rendered_data_root = f"/users/tyun/data/tyun/llm_causal_reasoning/llm_causal_reasoning/ACRE/rendered_data/{dataset_config.task}/IID"
+
+        train_config.output_path = os.path.join(
+            train_config.output_dir, 
+            f"{dataset_config.task}_{dataset_config.data_split}_{dataset_config.data_type}",
+            f"{train_config.llama_model_name}|T{1 if train_config.is_train_image_encoder else 0}-{train_config.image_model}-{train_config.num_layers}|ImgH-{dataset_config.image_height}|P-{train_config.patch_size}|S{1 if train_config.is_slot_attention else 0}-N{train_config.num_slots}-D{train_config.slot_hidden_dim}-I{train_config.slot_iters}|lr-{train_config.lr}|e-{train_config.num_epochs}|bs-{train_config.batch_size * train_config.gradient_accumulation_steps}|",
+        )
+
+    elif task == "raven_fair":
+        dataset_config.task = task
+        dataset_config.figure_configuration = figure_configuration
+        dataset_config.data_size = data_size
+        dataset_config.image_model = image_model
+        dataset_config.is_train_image_encoder = is_train_image_encoder
+        dataset_config.image_height = image_height
+
+        train_config.output_path = os.path.join(
+            train_config.output_dir, 
+            f"{dataset_config.task}_{dataset_config.figure_configuration}",
+            f"{train_config.llama_model_name}|T{1 if train_config.is_train_image_encoder else 0}-{train_config.image_model}-{train_config.num_layers}|ImgH-{dataset_config.image_height}|P-{train_config.patch_size}|S{1 if train_config.is_slot_attention else 0}-N{train_config.num_slots}-D{train_config.slot_hidden_dim}-I{train_config.slot_iters}|lr-{train_config.lr}|e-{train_config.num_epochs}|bs-{train_config.batch_size * train_config.gradient_accumulation_steps}|",
+        )
+    else:
+        raise(f"Not supported dataset: {task}")
+
+    
     os.makedirs(train_config.output_path, exist_ok=True)
 
     train_config.ckpt_output_path = os.path.join(train_config.output_path, "image_encoder.pt")
 
+    set_seed(dataset_config.seed)
     print(dataset_config.__dict__)
     print(train_config.__dict__)
     
@@ -202,15 +249,19 @@ def main(
             image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
         elif train_config.image_model in ["cnn"]:
             image_model = CnnModel(train_config.num_layers).to(device)
-            image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+            # image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+            image_preprocess = ViTImageProcessor(size={"height": dataset_config.image_height, "width": dataset_config.image_height})
         elif train_config.image_model in ["vit"]:
             image_model = VitModel(
                 num_layers=train_config.num_layers, 
                 num_attention_heads=train_config.num_attention_heads, 
                 hidden_size=train_config.image_model_hidden_size, 
                 intermediate_size=train_config.image_model_intermediate_size,
+                image_size=dataset_config.image_height,
+                patch_size=train_config.patch_size,
             ).to(device)
-            image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+            # image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+            image_preprocess = ViTImageProcessor(size={"height": dataset_config.image_height, "width": dataset_config.image_height})
 
     else:
         if train_config.image_model in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
@@ -220,15 +271,19 @@ def main(
             image_preprocess = BeitImageProcessor.from_pretrained(train_config.image_model)
         elif train_config.image_model in ["cnn"]:
             image_model = CnnModel(train_config.num_layers).to(device)
-            image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+            # image_preprocess = BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k-ft22k")
+            image_preprocess = ViTImageProcessor(size={"height": dataset_config.image_height, "width": dataset_config.image_height})
         elif train_config.image_model in ["vit"]:
             image_model = VitModel(
                 num_layers=train_config.num_layers, 
                 num_attention_heads=train_config.num_attention_heads, 
                 hidden_size=train_config.image_model_hidden_size, 
                 intermediate_size=train_config.image_model_intermediate_size,
+                image_size=dataset_config.image_height,
+                patch_size=train_config.patch_size,
             ).to(device)
-            image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+            # image_preprocess = AutoImageProcessor.from_pretrained("google/vit-base-patch16-224-in21k")
+            image_preprocess = ViTImageProcessor(size={"height": dataset_config.image_height, "width": dataset_config.image_height})
 
 
     image_model.eval()
@@ -334,45 +389,71 @@ def main(
         model.projection.train()
         
     # Prepare datasets
-    dataset_train = AcreDataset(
-        dataset_config, 
-        tokenizer, 
-        "train", 
-        is_inference=False, 
-        image_model=image_model,
-        image_model_name=train_config.image_model,
-        image_preprocess=image_preprocess, 
-        device=device,
-        is_cropped_objs=dataset_config.is_cropped_objs,
-        is_slot_attention=dataset_config.is_slot_attention, 
-        num_slots=dataset_config.num_slots,
-    )
-    dataset_valid = AcreDataset(
-        dataset_config, 
-        tokenizer, 
-        "val", 
-        is_inference=False, 
-        image_model=image_model,
-        image_model_name=train_config.image_model,
-        image_preprocess=image_preprocess, 
-        device=device,
-        is_cropped_objs=dataset_config.is_cropped_objs,
-        is_slot_attention=dataset_config.is_slot_attention, 
-        num_slots=dataset_config.num_slots,
-    )
-    dataset_test = AcreDataset(
-        dataset_config, 
-        tokenizer, 
-        "test", 
-        is_inference=False, 
-        image_model=image_model,
-        image_model_name=train_config.image_model,
-        image_preprocess=image_preprocess, 
-        device=device,
-        is_cropped_objs=dataset_config.is_cropped_objs,
-        is_slot_attention=dataset_config.is_slot_attention, 
-        num_slots=dataset_config.num_slots,
-    )
+    if task in ["acre", "acre_consistent"]:
+        dataset_train = AcreDataset(
+            dataset_config, 
+            tokenizer, 
+            "train", 
+            is_inference=False, 
+            image_model=image_model,
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+            device=device,
+            is_cropped_objs=dataset_config.is_cropped_objs,
+            is_slot_attention=dataset_config.is_slot_attention, 
+            num_slots=dataset_config.num_slots,
+        )
+        dataset_valid = AcreDataset(
+            dataset_config, 
+            tokenizer, 
+            "val", 
+            is_inference=False, 
+            image_model=image_model,
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+            device=device,
+            is_cropped_objs=dataset_config.is_cropped_objs,
+            is_slot_attention=dataset_config.is_slot_attention, 
+            num_slots=dataset_config.num_slots,
+        )
+        dataset_test = AcreDataset(
+            dataset_config, 
+            tokenizer, 
+            "test", 
+            is_inference=False, 
+            image_model=image_model,
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+            device=device,
+            is_cropped_objs=dataset_config.is_cropped_objs,
+            is_slot_attention=dataset_config.is_slot_attention, 
+            num_slots=dataset_config.num_slots,
+        )
+    elif task == "raven_fair":
+        dataset_train = RavenFairDataset(
+            dataset_config, 
+            tokenizer, 
+            split="train",
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+        )
+        dataset_valid = RavenFairDataset(
+            dataset_config, 
+            tokenizer, 
+            split="val",
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+        )
+        dataset_test = RavenFairDataset(
+            dataset_config, 
+            tokenizer, 
+            split="test",
+            image_model_name=train_config.image_model,
+            image_preprocess=image_preprocess, 
+        )
+    print(f"dataset_train: {len(dataset_train)}")
+    print(f"dataset_valid: {len(dataset_valid)}")
+    print(f"dataset_test: {len(dataset_test)}")
 
     # Start training
     best_accuracy = float("-inf")
@@ -380,7 +461,11 @@ def main(
     loss = -1
     for epoch_id in range(train_config.num_epochs):
         print("="*70, flush=True)
-        dataloader_train = DataLoader(dataset_train, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=True, drop_last=True, num_workers=train_config.num_workers)
+
+        if task in ["acre", "acre_consistent"]:
+            dataloader_train = DataLoader(dataset_train, batch_size=train_config.batch_size, collate_fn=AcreDataCollator(tokenizer), pin_memory=True, shuffle=True, drop_last=True, num_workers=train_config.num_workers)
+        elif task == "raven_fair":
+            dataloader_train = DataLoader(dataset_train, batch_size=train_config.batch_size, collate_fn=RavenFairDataCollator(tokenizer), pin_memory=True, shuffle=True, drop_last=True, num_workers=train_config.num_workers)
 
         pbar = tqdm(desc=f"Training Epoch: {epoch_id + 1}", total=len(dataloader_train)//train_config.gradient_accumulation_steps)
 
@@ -417,7 +502,7 @@ def main(
         pbar.close()
 
         if (epoch_id + 1) % train_config.validation_steps == 0:
-            accuracy = eval(model, dataset_valid, train_config, tokenizer)
+            accuracy = eval(model, dataset_valid, task, train_config, tokenizer)
             print(f"| epoch {epoch_id + 1} | valid_acc {accuracy:8.6f} |", flush=True)
             if accuracy > best_accuracy:
                 print("*"*70, flush=True)
@@ -436,7 +521,7 @@ def main(
     # Test with best checkpoint
     best_image_encoder_state_dict = torch.load(train_config.ckpt_output_path)
     model.load_state_dict(best_image_encoder_state_dict, strict=False)
-    accuracy_test = eval(model, dataset_test, train_config, tokenizer)        
+    accuracy_test = eval(model, dataset_test, task, train_config, tokenizer)        
     print("="*70, flush=True)
     print(f"Best validation accuracy: {best_accuracy:8.6f} at epoch {best_epoch_id}")
     print(f"Test accuracy: {accuracy_test:8.6f}", flush=True)

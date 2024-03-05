@@ -76,12 +76,26 @@ def get_data(data_type, split, cfg):
     return data
 
 
-def get_objects_str(objects, is_cropped_objs, is_slot_attention, num_slots):
+def get_objects_str(objects, dataset_config, is_cropped_objs, is_slot_attention, num_slots):
     if is_slot_attention:
         num_objs = num_slots
+        return f"Objects: {' '.join(['<MASK>']*num_objs)}" 
+    elif dataset_config.is_language_inference:
+        if dataset_config.data_type == "symbolic":
+            return f"Objects: {objects}"
+        elif dataset_config.data_type == "language":
+            num_objs = len(objects)
+            if num_objs == 1:
+                return f"Objects: There is {objects[0]}."
+            elif num_objs == 2:
+                return f"Objects: There are {objects[0]} and {objects[1]}."
+            else:
+                return f"Objects: There are {', '.join(objects[:-1])} and {objects[-1]}."
+        else:
+            raise Exception(f"{dataset_config.data_type} not supported.")
     else:
         num_objs = len(objects) if is_cropped_objs else 1
-    return f"Objects: {' '.join(['<MASK>']*num_objs)}" 
+        return f"Objects: {' '.join(['<MASK>']*num_objs)}" 
 
 
 def get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots):
@@ -91,7 +105,7 @@ def get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots):
         return len(panel["objects"]) if is_cropped_objs else 1
 
 
-def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs, is_slot_attention, num_slots):
+def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs, is_slot_attention, num_slots, dataset_in_context_examples=None):
     prompts, outputs, obj_counts = [],[],[]
 
     for ex_id, ex in tqdm(enumerate(dataset), total=len(dataset)):
@@ -101,18 +115,42 @@ def process_dataset(dataset, dataset_config, is_inference, is_cropped_objs, is_s
 
         base_prompt = "You are a helpful assistant that determines whether the light will be activated by the objects. Some objects can activate the light. The other objects cannot activate the light. There are three possible light states: on, off, and unknown.\n"
 
+        # Process in-context examples
+        if dataset_config.kshot > 0:
+            base_prompt += "Here are some examples.\n"
+
+            in_context_example_ids = np.random.choice(range(len(dataset_in_context_examples)), size=dataset_config.kshot)
+            for i, ex_id in enumerate(in_context_example_ids):
+                base_prompt += f"Example {i}\n"
+                ex = dataset_in_context_examples[ex_id]
+                ex_contexts = ex[:dataset_config.num_contexts_per_example]
+
+                # Prepare in-context context panels
+                for panel in ex_contexts:
+                    light_state = "unknown" if panel["light_state"] == "undetermined" else panel["light_state"]
+                    base_prompt += f"{get_objects_str(panel['objects'], dataset_config, is_cropped_objs, is_slot_attention, num_slots)}\nLight: {light_state}\n"
+
+                # Prepare in-context query panel
+                ex_query_id = np.random.choice(range(dataset_config.num_contexts_per_example, dataset_config.num_panels_per_example), size=1).item()
+                ex_query = ex[ex_query_id]
+
+                light_state = IDX_TO_LIGHT_STATE[ex_query["label"]]
+                base_prompt += f"{get_objects_str(ex_query['objects'], dataset_config, is_cropped_objs, is_slot_attention, num_slots)}\nLight: {light_state}\n\n"
+            base_prompt += f"Example {dataset_config.kshot}\n"
+
+        # Process query example
         base_obj_counts = []
         for i in range(dataset_config.num_contexts_per_example):
             panel = ex[i]
             light_state = "unknown" if panel["light_state"] == "undetermined" else panel["light_state"]
-            base_prompt += f"{get_objects_str(panel['objects'], is_cropped_objs, is_slot_attention, num_slots)}\nLight: {light_state}\n"
+            base_prompt += f"{get_objects_str(panel['objects'], dataset_config, is_cropped_objs, is_slot_attention, num_slots)}\nLight: {light_state}\n"
             num_objs = get_num_objects(panel, is_cropped_objs, is_slot_attention, num_slots)
             base_obj_counts.append(num_objs)
 
         for i in range(dataset_config.num_contexts_per_example, dataset_config.num_panels_per_example):
             panel = ex[i]
             light_state = IDX_TO_LIGHT_STATE[panel["label"]]
-            prompt = base_prompt + f"{get_objects_str(panel['objects'], is_cropped_objs, is_slot_attention, num_slots)}\nLight:"
+            prompt = base_prompt + f"{get_objects_str(panel['objects'], dataset_config, is_cropped_objs, is_slot_attention, num_slots)}\nLight:"
             prompts.append(prompt)
             outputs.append(f"{light_state}")
 
@@ -282,7 +320,7 @@ class AcreDataset(Dataset):
         image_preprocess=None, 
         device=None, 
         is_cropped_objs=False,
-        is_slot_attention=True, 
+        is_slot_attention=False, 
         num_slots=-1,
         is_symbolic_representations=False,
     ):
@@ -297,9 +335,22 @@ class AcreDataset(Dataset):
         self.num_slots = num_slots
         self.is_symbolic_representations = is_symbolic_representations
         self.is_inference = is_inference
+        self.kshot = dataset_config.kshot
 
+        self.data_train = None
+        if self.kshot > 0:
+            self.dataset_train = get_data(dataset_config.data_type, "train", dataset_config)
+        
         self.dataset = get_data(dataset_config.data_type, self.split, dataset_config)
-        self.prompts, self.outputs, self.obj_counts = process_dataset(self.dataset, dataset_config, is_inference, self.is_cropped_objs, self.is_slot_attention, self.num_slots)
+        self.prompts, self.outputs, self.obj_counts = process_dataset(
+            self.dataset, 
+            dataset_config, 
+            self.is_inference, 
+            self.is_cropped_objs, 
+            self.is_slot_attention, 
+            self.num_slots, 
+            dataset_in_context_examples=self.dataset_train
+        )
 
         if not self.is_inference:
             if self.is_symbolic_representations:

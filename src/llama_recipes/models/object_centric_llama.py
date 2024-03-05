@@ -238,13 +238,15 @@ class ObjectCentricLlama(nn.Module):
 
 
 class VitModel(nn.Module):
-    def __init__(self, num_layers, num_attention_heads, hidden_size, intermediate_size):
+    def __init__(self, num_layers, num_attention_heads, hidden_size, intermediate_size, image_size, patch_size):
         super().__init__()
         self.config = ViTConfig(
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
             num_attention_heads=num_attention_heads,
-            intermeidate_size=intermediate_size,    
+            intermeidate_size=intermediate_size, 
+            image_size=image_size,
+            patch_size=patch_size,
         )
         self.vit = ViTModel(self.config)
         
