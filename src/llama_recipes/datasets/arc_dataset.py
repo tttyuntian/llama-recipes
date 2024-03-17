@@ -14,12 +14,15 @@ from tqdm import tqdm
 # returns all the json data from the train or test split
 def get_data(split, cfg):
     data = []
+    """
     if split == "train":
         directory = os.path.join(cfg.data_root, "training")
     elif split == "test":
         directory = os.path.join(cfg.data_root, "evaluation")
     else:
         raise ValueError("Invalid input for the variable split. Must be test or train")
+    """
+    directory = cfg.data_root
 
     # option to change number of samples based on cfg.data size variable
     json_files = [filename for filename in os.listdir(directory) if filename.endswith('.json')]
@@ -51,21 +54,21 @@ def get_prompts_and_outputs(dataset, dataset_config, is_inference):
         
         examples = ex["train"]
         for example in examples:
-            base_prompt += "\nInput: \n"
+            base_prompt += "\nInput: "
             base_prompt += f"{example['input']}\n"
-            base_prompt += "Output: \n"
+            base_prompt += "Output: "
             base_prompt += f"{example['output']}"
 
         question = ex["test"][0]
-        base_prompt += "\nInput: \n"
+        base_prompt += "\nInput:"
         base_prompt += f"{question['input']}\n"
+        base_prompt += "Output:"
 
         correct_output = f"{question['output']}"
 
-
+        #base_prompt = "to make a pizza start by"
         prompts.append(base_prompt)
         outputs.append(correct_output)
-
 
     return prompts, outputs
 
@@ -122,6 +125,13 @@ class ArcDataset(Dataset):
             example = torch.tensor(
                 self.tokenizer.encode(prompt), dtype=torch.int64
             )
+
+            output_tensor = torch.tensor(
+                self.tokenizer.encode(output), dtype=torch.int64
+            )
+            output_token_len = output_tensor.shape[0]
+
+
             labels = torch.tensor(self.tokenizer.encode(output, add_special_tokens=False), dtype=torch.int64)
             padding = self.max_tokens - example.shape[0]
             if padding > 0:
@@ -140,4 +150,5 @@ class ArcDataset(Dataset):
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": input_ids_mask,
+            "output_tensor": output_tensor
         }

@@ -165,9 +165,14 @@ def main(
         with torch.no_grad():
             outputs = model(input_ids=batch["input_ids"])
         
+        print("logits shape: " + str(outputs.logits.shape))
+
+
         # output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-2], skip_special_tokens=True)
         output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-1], skip_special_tokens=True)
         responses.append(output_text)
+
+        print("output_text: " + str(output_text)) 
 
         """
         with torch.no_grad():

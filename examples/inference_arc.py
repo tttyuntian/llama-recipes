@@ -13,29 +13,24 @@ import torch
 from tqdm import tqdm
 from transformers import LlamaTokenizer
 from transformers import GenerationConfig
+import transformers
 
 from llama_recipes.datasets.arc_dataset import ArcDataset
 from llama_recipes.inference.safety_utils import get_safety_checker
 from llama_recipes.inference.model_utils import load_model, load_peft_model
 
 
-NUM_EXAMPLES_DICT = {
-    "train": 6000,
-    "val": 2000,
-    "test": 2000,
-}
-
 class DatasetConfigurations:
     def __init__(self):
         self.seed = 42
         self.work_root = "/oscar/data/csun45/jbyers3/ARC"  # this is a cloned repo from https://github.com/fchollet/ARC
-        self.max_tokens = 700
+        self.max_tokens = 4096  # max is 4096
         self.data_size = -1
 
 
 def update_dataset_config(config, task, data_type, data_size):
     config.data_size = data_size
-    config.data_root = os.path.join(config.work_root, "data")
+    config.data_root = os.path.join(config.work_root, "categorized-data/tiny")
     return config
 
 
@@ -98,27 +93,40 @@ def main(
         except ImportError:
             print("Module 'optimum' not found. Please install 'optimum' it before proceeding.")
 
-    # model.resize_token_embeddings(model.config.vocab_size + 1)  # for the added padding token
-    
-    
     responses = []
+    correct_count = 0
     for ex_id, batch in tqdm(enumerate(dataset_test)):
 
-
         batch = {k: v.unsqueeze(0).to("cuda") for k, v in batch.items()}
-        
+        output_tensor = batch["output_tensor"][0]  # index at zero assuming batch size is 1
+        expected_output_size = output_tensor.shape[0]
+
         with torch.no_grad():
-            outputs = model(input_ids=batch["input_ids"])
-
+            outputs = model.generate(
+            input_ids=batch["input_ids"],
+            max_new_tokens=expected_output_size
+            )
         
-        first_elements = outputs.logits.argsort(dim=-1)[0][:, -1]
-        first_row = outputs.logits.argsort(dim=-1)[0][0]
-
-        #output_text = tokenizer.decode(outputs.logits.argmax(dim=-1)[0][-1], skip_special_tokens=True)  # original line
-        output_text = tokenizer.decode(first_elements, skip_special_tokens=True)
-        #print(output_text)  # allows you to see output text
         
-        responses.append(output_text)
+        just_new_tokens = outputs[0][-expected_output_size:]
+
+        predicted_output = tokenizer.decode(just_new_tokens, skip_special_tokens=True)
+        expected_output = tokenizer.decode(output_tensor, skip_special_tokens=True)
+        responses.append(predicted_output)
+
+        predicted_output = str(predicted_output)
+        expected_output = str(expected_output)
+        if predicted_output == expected_output:
+            correct_count += 1
+            print()
+            print()
+            print("CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT CORRRECT ")
+
+        print()
+        print("expected_output shape: " + str(expected_output_size))
+        print("expected_output: " + str(expected_output))
+        print("predicted_output: " + str(predicted_output))
+        
         
 
     # Save responses
@@ -130,6 +138,13 @@ def main(
         pkl.dump(responses, f)
     print(f"responses save to {output_path}")
     print("Done!")
+
+    # Print Results
+    print("-"*50)
+    print("Results")
+    print("Correct Responses: " + str(correct_count))
+    #percent_correct = len(dataset_test)
+    print(f"Accuracy: {correct_count / len(dataset_test):8.6f}")
 
 if __name__ == "__main__":
     fire.Fire(main)

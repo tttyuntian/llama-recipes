@@ -193,6 +193,11 @@ class AcreDataset(Dataset):
             example = torch.tensor(
                 self.tokenizer.encode(prompt), dtype=torch.int64
             )
+
+            print()
+            print("encoded prompt shape: " + str(example.shape))
+
+
             labels = torch.tensor(self.tokenizer.encode(output, add_special_tokens=False), dtype=torch.int64)
             padding = self.max_tokens - example.shape[0]
             if padding > 0:
