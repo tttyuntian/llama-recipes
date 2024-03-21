@@ -1,10 +1,15 @@
+import json
 import os
 
 import numpy as np
 from PIL import Image
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from tqdm import tqdm
+
+from ..utils import set_seed
+
 
 
 NUM_EXAMPLES_DICT = {
@@ -22,6 +27,12 @@ LABEL_DICT = {
     5: "F",
     6: "G",
     7: "H",
+}
+
+NUM_ATTRIBUTE_CLASSES_DICT = {
+    "Type": 6,
+    "Color": 10,
+    "Size": 6,
 }
 
 
@@ -166,6 +177,97 @@ class RavenFairDataset(Dataset):
             images = self.preprocess_image_input(idx)
         else:
             images = self.all_processed_images[idx]
+        object_counts = self.obj_counts[idx]
+
+        prompt, output = self.prompts[idx], self.outputs[idx]
+        input_ids = torch.tensor(
+            self.tokenizer.encode(prompt), dtype=torch.int64
+        )
+        input_ids_mask = input_ids.ge(0)
+        input_ids[~input_ids_mask] = 0
+        input_ids_mask = input_ids_mask.float()
+
+        return {
+            "input_ids": input_ids,
+            "label": self.tokenizer.encode(output, add_special_tokens=False),
+            "attention_mask": input_ids_mask,
+            "objects": images,
+            "object_counts": object_counts,
+        }
+
+
+class RavenFairSymbolicDataset(Dataset):
+    def __init__(
+        self,
+        dataset_config,
+        tokenizer,
+        split="train",
+    ):
+        self.config = dataset_config
+        self.seed = self.config.seed
+        self.tokenizer = tokenizer
+        self.split = split
+
+        self.data = self.load_data()
+        self.all_labels = self._get_labels()
+        self.all_multihot_representations_list = self.preprocess()
+        self.prompts, self.outputs, self.obj_counts = process_dataset(self, dataset_config)
+
+    def load_data(self):
+        with open(os.path.join(self.config.data_root, f"{self.config.figure_configuration}.json"), "r") as f:
+            all_data = json.load(f)
+        
+        data = []
+        for i in range(len(all_data)):
+            if (self.split == "train") and (i % 10 < 6):
+                data.append(all_data[str(i)])
+            elif (self.split == "val") and (i % 10 in [6, 7]):
+                data.append(all_data[str(i)])
+            elif (self.split == "test") and (i % 10 in [8, 9]):
+                data.append(all_data[str(i)])      
+        return data
+
+    def _get_labels(self):
+        if self.split == "train":
+            seed = self.seed
+        elif self.split == "val":
+            seed = self.seed + 1
+        elif self.split == "test":
+            seed = self.seed + 2
+        set_seed(seed)
+
+        size = len(self.data) if self.config.data_size == -1 else self.config.data_size
+        labels = np.random.randint(0, 8, size=size)
+        return labels
+
+    def __len__(self):
+        return len(self.all_labels)
+
+    def _switch(self, input_list, i, j):
+        input_list[i], input_list[j] = input_list[j], input_list[i]
+        return input_list
+
+    def preprocess(self):
+        all_multihot_representations_list = []
+        for i in range(self.__len__()):
+            panels = self.data[i]["rpm"]
+            label = self.all_labels[i]
+
+            curr_example = []
+            for panel in panels:
+                multihot_representation = torch.concatenate([
+                    F.one_hot(torch.tensor(int(panel[0][attribute])), num_classes=NUM_ATTRIBUTE_CLASSES_DICT[attribute])
+                    for attribute in ["Type", "Size", "Color"]
+                ])
+                curr_example.append(multihot_representation)
+            curr_example = self._switch(curr_example, 8, 8+label)
+
+            all_multihot_representations_list.append(torch.stack(curr_example))
+
+        return torch.stack(all_multihot_representations_list)
+        
+    def __getitem__(self, idx):
+        images = self.all_multihot_representations_list[idx]
         object_counts = self.obj_counts[idx]
 
         prompt, output = self.prompts[idx], self.outputs[idx]

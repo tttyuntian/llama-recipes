@@ -4,6 +4,7 @@ develop/
 ft_ckpts/
 outputs/
 slurm_scripts/
+data/
 
 .DS_Store
 __pycache__
