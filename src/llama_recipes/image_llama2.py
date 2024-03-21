@@ -45,14 +45,14 @@ class DatasetConfigurations:
             self.num_panels_per_example = 3
             self.data_size = -1
             self.is_cropped_objs = False
-            self.is_train_image_encoder = False
+            self.is_train_image_encoder = None
         elif task == "raven_fair":
             self.seed = 42
             self.data_root = "/users/tyun/data/tyun/llm_causal_reasoning/RAVEN_FAIR/data/RAVEN-F"
             self.figure_configuration = None # ["center_single", "in_distribute_four_out_center_single", "distribute_four", "distribute_nine", "up_center_single_down_center_single", "in_center_single_out_center_single", "left_center_single_right_center_single"]
             self.kshot = 0
             self.data_size = -1
-            self.is_train_image_encoder = True
+            self.is_train_image_encoder = None
         else:
             raise(f"Not supported dataset: {task}")
 
@@ -434,22 +434,28 @@ def main(
             dataset_config, 
             tokenizer, 
             split="train",
+            image_model=image_model,
             image_model_name=train_config.image_model,
             image_preprocess=image_preprocess, 
+            device=device,
         )
         dataset_valid = RavenFairDataset(
             dataset_config, 
             tokenizer, 
             split="val",
+            image_model=image_model,
             image_model_name=train_config.image_model,
             image_preprocess=image_preprocess, 
+            device=device,
         )
         dataset_test = RavenFairDataset(
             dataset_config, 
             tokenizer, 
             split="test",
+            image_model=image_model,
             image_model_name=train_config.image_model,
             image_preprocess=image_preprocess, 
+            device=device,
         )
     print(f"dataset_train: {len(dataset_train)}")
     print(f"dataset_valid: {len(dataset_valid)}")
