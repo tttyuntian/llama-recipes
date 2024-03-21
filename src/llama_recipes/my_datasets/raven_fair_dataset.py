@@ -103,20 +103,50 @@ class RavenFairDataset(Dataset):
         dataset_config, 
         tokenizer, 
         split="train", 
+        image_model=None,
         image_model_name=None,
         image_preprocess=None,
+        device=None,
     ):
         self.config = dataset_config
         self.tokenizer = tokenizer
         self.split = split
+        self.image_model = image_model
         self.image_model_name = image_model_name
         self.image_preprocess = image_preprocess
+        self.device = device
 
         self.all_images, self.all_labels = load_images(dataset_config, split)
         self.prompts, self.outputs, self.obj_counts = process_dataset(self, dataset_config)
 
+        if not self.config.is_train_image_encoder:
+            # If we do not train image encoder, we can precompute image features
+            self.all_processed_images = self.precompute_image_features()
+
     def __len__(self):
         return len(self.all_labels)
+
+    def precompute_image_features(self):
+        assert self.image_model, "No image_model found."
+
+        res = []
+        for ex_images in tqdm(self.all_images, desc=f"{self.split} precompute_image_features"):
+            curr_images = []
+            for image in ex_images:
+                image = Image.fromarray(image).convert("RGB")
+                if self.image_model_name in ["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px"]:
+                    curr_img = self.image_preprocess(image).unsqueeze(0)
+                    with torch.no_grad():
+                        image_features = self.image_model.encode_image(curr_img.to(self.device))
+                elif self.image_model_name in ["microsoft/beit-base-patch16-224-pt22k-ft22k", "cnn", "vit"]:
+                    curr_img = self.image_preprocess(images=image, return_tensors="pt")["pixel_values"].to(self.device)
+                    with torch.no_grad():
+                        image_features = self.image_model(pixel_values=curr_img)
+                        image_features = image_features.last_hidden_state[:,1:]  # Exclude CLS token
+                        image_features = image_features.mean(dim=1)  # Aggregate hidden representations to obtain image representation
+                curr_images.append(image_features.detach().cpu().numpy()[0].copy())
+            res.append(np.array(curr_images.copy()))
+        return res
 
     def preprocess_image_input(self, idx):
         res = []
@@ -132,7 +162,10 @@ class RavenFairDataset(Dataset):
         return np.array(res)
 
     def __getitem__(self, idx):
-        images = self.preprocess_image_input(idx)
+        if self.config.is_train_image_encoder:
+            images = self.preprocess_image_input(idx)
+        else:
+            images = self.all_processed_images[idx]
         object_counts = self.obj_counts[idx]
 
         prompt, output = self.prompts[idx], self.outputs[idx]
